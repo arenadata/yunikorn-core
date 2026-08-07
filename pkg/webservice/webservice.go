@@ -20,6 +20,7 @@ package webservice
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"sync/atomic"
@@ -37,17 +38,81 @@ import (
 var imHistory *history.InternalMetricsHistory
 var schedulerContext atomic.Pointer[scheduler.ClusterContext]
 
-type WebService struct {
+// WebServer is the shared web server for all YuniKorn web components: an
+// httprouter serving a route table (plus an optional static file root), with
+// the configured authentication middleware chain, response compression and
+// listener TLS applied. The components (the scheduler REST API and the
+// yunikorn-web UI) differ only in the routes and middleware they register.
+type WebServer struct {
 	httpServer *http.Server
 }
 
-func newRouter() *httprouter.Router {
+// NewWebServer builds the shared web server serving the given routes. Role
+// based authorization is applied per route, driven by the route Name. A route
+// with the root catch-all pattern "/*filepath" (e.g. a static file server)
+// becomes the fallback for every path no other route matched: httprouter
+// cannot combine a root catch-all with other routes. Extra middleware is
+// applied between the authentication chain and the router.
+func NewWebServer(cfg *Config, addr string, rts []Route, mw ...Middleware) *WebServer {
 	router := httprouter.New()
-	for _, webRoute := range webRoutes {
-		handler := loggingHandler(webRoute.HandlerFunc, webRoute.Name)
-		router.Handler(webRoute.Method, webRoute.Pattern, handler)
+	for _, rt := range rts {
+		handler := cfg.authorizeRoute(rt.Name, loggingHandler(rt.HandlerFunc, rt.Name))
+		if rt.Pattern == "/*filepath" {
+			router.NotFound = handler
+			continue
+		}
+		router.Handler(rt.Method, rt.Pattern, handler)
 	}
-	return router
+
+	var handler http.Handler = router
+	for i := len(mw) - 1; i >= 0; i-- {
+		handler = mw[i](handler)
+	}
+
+	return &WebServer{
+		httpServer: &http.Server{
+			Addr:              addr,
+			Handler:           compressResponse(cfg.Wrap(handler)),
+			ReadHeaderTimeout: 10 * time.Second,
+			TLSConfig:         listenerTLSConfig(cfg),
+		},
+	}
+}
+
+// Handler returns the fully wrapped root handler of the server.
+func (ws *WebServer) Handler() http.Handler {
+	return ws.httpServer.Handler
+}
+
+// Start serves in the background; TLS is used when configured.
+func (ws *WebServer) Start() {
+	log.Log(log.REST).Info("web server started", zap.String("addr", ws.httpServer.Addr))
+	go func() {
+		var err error
+
+		if ws.httpServer.TLSConfig == nil {
+			err = ws.httpServer.ListenAndServe()
+		} else {
+			err = ws.httpServer.ListenAndServeTLS("", "")
+		}
+
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Log(log.REST).Error("HTTP serving error",
+				zap.Error(err))
+		}
+	}()
+}
+
+// Stop gracefully shuts the server down within 5 seconds.
+func (ws *WebServer) Stop() error {
+	if ws == nil || ws.httpServer == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ws.httpServer.SetKeepAlivesEnabled(false)
+	return ws.httpServer.Shutdown(ctx)
 }
 
 func loggingHandler(inner http.Handler, name string) http.HandlerFunc {
@@ -62,23 +127,23 @@ func loggingHandler(inner http.Handler, name string) http.HandlerFunc {
 	}
 }
 
-// StartWebApp starts the web app on the default port.
-func (m *WebService) StartWebApp() {
-	router := newRouter()
-	m.httpServer = &http.Server{
-		Addr:              ":9080",
-		Handler:           compressResponse(router),
-		ReadHeaderTimeout: 10 * time.Second,
+// listenerTLSConfig loads the listener TLS configuration. When TLS is
+// configured but broken, a config without certificates is returned: the
+// listener then fails to start instead of silently downgrading to plain HTTP.
+func listenerTLSConfig(cfg *Config) *tls.Config {
+	tlsConfig, err := cfg.TLSConfig()
+	if err != nil {
+		log.Log(log.REST).Error("unable to load web app TLS configuration, keeping the listener closed",
+			zap.Error(err))
+		return &tls.Config{}
 	}
+	return tlsConfig
+}
 
-	log.Log(log.REST).Info("web-app started", zap.Int("port", 9080))
-	go func() {
-		httpError := m.httpServer.ListenAndServe()
-		if httpError != nil && !errors.Is(httpError, http.ErrServerClosed) {
-			log.Log(log.REST).Error("HTTP serving error",
-				zap.Error(httpError))
-		}
-	}()
+// WebService is the scheduler REST API: the shared web server with the
+// scheduler route table.
+type WebService struct {
+	server *WebServer
 }
 
 func NewWebApp(context *scheduler.ClusterContext, internalMetrics *history.InternalMetricsHistory) *WebService {
@@ -88,13 +153,18 @@ func NewWebApp(context *scheduler.ClusterContext, internalMetrics *history.Inter
 	return m
 }
 
-func (m *WebService) StopWebApp() error {
-	if m.httpServer != nil {
-		// graceful shutdown in 5 seconds
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return m.httpServer.Shutdown(ctx)
+// StartWebApp starts the scheduler REST API on the default port.
+func (m *WebService) StartWebApp() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		log.Log(log.REST).Error("unable to load webservice configuration",
+			zap.Error(err))
+		cfg = &Config{}
 	}
+	m.server = NewWebServer(cfg, ":9080", webRoutes)
+	m.server.Start()
+}
 
-	return nil
+func (m *WebService) StopWebApp() error {
+	return m.server.Stop()
 }

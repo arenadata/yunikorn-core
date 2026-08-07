@@ -23,165 +23,192 @@ import (
 	"net/http/pprof"
 )
 
-type route struct {
+type Route struct {
 	Name        string
 	Method      string
 	Pattern     string
 	HandlerFunc http.HandlerFunc
 }
 
-type routes []route
+type routes []Route
+
+// Route categories. Role based authorization is driven by these names: the
+// admin role is allowed everything, viewer the Scheduler routes, service the
+// Metrics routes. With authentication enabled, routes with a category not
+// listed here are not served at all (403).
+const (
+	RouteNameCluster   = "Cluster"
+	RouteNameScheduler = "Scheduler"
+	RouteNameMetrics   = "Metrics"
+	RouteNameSystem    = "System"
+	// RouteNameStaticUI is the static web UI file server of yunikorn-web.
+	RouteNameStaticUI = "StaticUI"
+)
+
+// knownRouteName reports whether the route category is one of the defined ones.
+func knownRouteName(name string) bool {
+	switch name {
+	case RouteNameCluster, RouteNameScheduler, RouteNameMetrics, RouteNameSystem, RouteNameStaticUI:
+		return true
+	}
+	return false
+}
+
+// Routes returns a copy of the scheduler REST API route table.
+func Routes() []Route {
+	return append([]Route(nil), webRoutes...)
+}
 
 var webRoutes = routes{
 	// endpoints to retrieve general cluster info
-	route{
-		"Cluster",
+	Route{
+		RouteNameCluster,
 		"GET",
 		"/ws/v1/clusters",
 		getClusterInfo,
 	},
-	route{
-		"Cluster",
+	Route{
+		RouteNameMetrics,
 		"GET",
 		"/ws/v1/metrics",
 		getMetrics,
 	},
-	route{
-		"Cluster",
+	Route{
+		RouteNameCluster,
 		"GET",
 		"/ws/v1/config",
 		getClusterConfig,
 	},
-	route{
-		"Cluster",
+	Route{
+		RouteNameCluster,
 		"POST",
 		"/ws/v1/validate-conf",
 		validateConf,
 	},
 
 	// endpoints to retrieve general scheduler info
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/history/apps",
 		getApplicationHistory,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/history/containers",
 		getContainerHistory,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partitions",
 		getPartitions,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/placementrules",
 		getPartitionRules,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/queues",
 		getPartitionQueues,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/queue/:queue",
 		getPartitionQueue,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/nodes",
 		getPartitionNodes,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/node/:node",
 		getPartitionNode,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/queue/:queue/applications",
 		getQueueApplications,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/queue/:queue/application/:application",
 		getApplication,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/application/:application",
 		getApplication,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/applications/:state",
 		getPartitionApplicationsByState,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/queue/:queue/applications/:state",
 		getQueueApplicationsByState,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/usage/users",
 		getUsersResourceUsage,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/usage/user/:user",
 		getUserResourceUsage,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/usage/groups",
 		getGroupsResourceUsage,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/partition/:partition/usage/group/:group",
 		getGroupResourceUsage,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/events/batch",
 		getEvents,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/events/stream",
 		getStream,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/scheduler/healthcheck",
 		checkHealthStatus,
 	},
-	route{
-		"Scheduler",
+	Route{
+		RouteNameScheduler,
 		"GET",
 		"/ws/v1/scheduler/node-utilizations",
 		getNodeUtilisations,
@@ -193,80 +220,80 @@ var webRoutes = routes{
 	// The content is not considered stable and can change from release to release.
 	// All pprof endpoints provide profiling data in the format expected by the pprof visualization tool.
 	// We need to explicitly register all handlers as we do not use the DefaultServeMux
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/stack",
 		HandlerFunc: getStackInfo,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/fullstatedump",
 		HandlerFunc: getFullStateDump,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/heap",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/threadcreate",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/goroutine",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/allocs",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/block",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/mutex",
 		HandlerFunc: pprof.Index,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/cmdline",
 		HandlerFunc: pprof.Cmdline,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/profile",
 		HandlerFunc: pprof.Profile,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/symbol",
 		HandlerFunc: pprof.Symbol,
 	},
-	route{
-		Name:        "System",
+	Route{
+		Name:        RouteNameSystem,
 		Method:      "GET",
 		Pattern:     "/debug/pprof/trace",
 		HandlerFunc: pprof.Trace,
@@ -276,16 +303,16 @@ var webRoutes = routes{
 	//
 	// Permanently moved to the debug endpoint as part of YuniKorn 1.7
 	// Remove redirect in YuniKorn 1.10
-	route{
-		Name:        "Scheduler",
+	Route{
+		Name:        RouteNameScheduler,
 		Method:      "GET",
 		Pattern:     "/ws/v1/stack",
 		HandlerFunc: redirectDebug,
 	},
 	// Permanently moved to the debug endpoint as part of YuniKorn 1.7
 	// Remove redirect in YuniKorn 1.10
-	route{
-		Name:        "Scheduler",
+	Route{
+		Name:        RouteNameScheduler,
 		Method:      "GET",
 		Pattern:     "/ws/v1/fullstatedump",
 		HandlerFunc: redirectDebug,
