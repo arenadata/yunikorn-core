@@ -22,7 +22,10 @@ module github.com/apache/yunikorn-core
 go 1.25.0
 
 require (
-	github.com/apache/yunikorn-scheduler-interface v1.9.0-0
+	github.com/apache/yunikorn-scheduler-interface v0.0.0-20260727092410-674338955bdf
+	github.com/caarlos0/env/v11 v11.4.1
+	github.com/go-krb5/krb5 v0.1.0
+	github.com/go-krb5/x v0.3.2
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/google/btree v1.1.3
 	github.com/google/go-cmp v0.7.0
@@ -33,11 +36,12 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.67.5
 	github.com/sasha-s/go-deadlock v0.3.9
+	github.com/shulutkov/krb5test v0.0.0-20260430052432-a687f0f996ab
 	go.uber.org/zap v1.27.1
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90
 	golang.org/x/time v0.15.0
-	google.golang.org/grpc v1.79.3
+	google.golang.org/grpc v1.82.1
 	gotest.tools/v3 v3.5.2
 )
 
@@ -46,6 +50,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
+	github.com/go-crypt/x v0.4.14 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe // indirect
@@ -56,7 +61,7 @@ require (
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
