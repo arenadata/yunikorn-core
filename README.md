@@ -149,6 +149,7 @@ Environment variable reference:
 | `YUNIKORN_METRICS_AUTH_MODE` | authentication override for the `/metrics` endpoint of the metrics-only listener: an auth mode, or `none` to disable; empty inherits the main settings |
 | `YUNIKORN_METRICS_AUTH_SHARED_SECRET` | dedicated secret for the `/metrics` override |
 | `YUNIKORN_TLS_CERT_FILE` / `_KEY_FILE` / `_CA_FILE` | listener TLS certificate set |
+| `YUNIKORN_LDAP_USER_BASE_DN` | subtree holding user entries; defaults to `_BASE_DN` |
 | `YUNIKORN_LDAP_URL`, `_BIND_DN`, `_BIND_PASSWORD`, `_BASE_DN` | LDAP connection and service account |
 | `YUNIKORN_LDAP_GROUP_ATTRIBUTE` | group attribute (default `memberOf`) |
 | `YUNIKORN_LDAP_ALLOWED_GROUPS`, `_ADMIN_GROUPS`, `_VIEWER_GROUPS`, `_SERVICE_GROUPS` | comma separated group lists for authorization |
