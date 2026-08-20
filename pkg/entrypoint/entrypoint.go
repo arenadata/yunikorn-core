@@ -105,9 +105,9 @@ func startAllServicesWithParameters(opts startupOptions) *ServiceContext {
 		context.MetricsCollector = metricsCollector
 	}
 
+	webapp := webservice.NewWebApp(sched.GetClusterContext(), imHistory)
 	if opts.startWebAppFlag {
 		log.Log(log.Entrypoint).Info("ServiceContext start web application service")
-		webapp := webservice.NewWebApp(sched.GetClusterContext(), imHistory)
 		webapp.StartWebApp()
 		context.WebApp = webapp
 	}
