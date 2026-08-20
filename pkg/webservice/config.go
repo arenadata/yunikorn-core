@@ -74,6 +74,7 @@ type LDAPConfig struct {
 	BindDN             string        `env:"BIND_DN"`
 	BindPassword       string        `env:"BIND_PASSWORD"`
 	BaseDN             string        `env:"BASE_DN"`
+	UserBaseDN         string        `env:"USER_BASE_DN"`
 	GroupAttribute     string        `env:"GROUP_ATTRIBUTE"`
 	AllowedGroups      GroupSet      `env:"ALLOWED_GROUPS"`
 	AdminGroups        GroupSet      `env:"ADMIN_GROUPS"`

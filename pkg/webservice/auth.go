@@ -60,6 +60,7 @@
 package webservice
 
 import (
+	"cmp"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -731,7 +732,7 @@ func (c *LDAPConfig) lookupGroupsWithConn(conn *ldap.Conn, username, userDN stri
 func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (string, []string, error) {
 	filter := fmt.Sprintf("(|(uid=%[1]s)(sAMAccountName=%[1]s)(cn=%[1]s))", ldap.EscapeFilter(username))
 	search := ldap.NewSearchRequest(
-		c.BaseDN,
+		cmp.Or(c.UserBaseDN, c.BaseDN),
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
 		1,
