@@ -841,7 +841,18 @@ func normalizeGroupName(group string) string {
 	return strings.ToLower(strings.TrimSpace(group))
 }
 
+// normalizeLDAPGroupNames returns the names a raw group value may be matched
+// against: for an entry DN the value of its leading RDN - the group's cn -
+// otherwise the value itself, lowercased and trimmed.
 func normalizeLDAPGroupNames(raw string) []string {
 	values := []string{normalizeGroupName(raw)}
+	dn, err := ldap.ParseDN(raw)
+	// an empty value parses without error into a DN with no RDNs
+	if err != nil || len(dn.RDNs) == 0 {
+		return values
+	}
+	if cn := normalizeGroupName(dn.RDNs[0].Attributes[0].Value); cn != "" {
+		return []string{cn}
+	}
 	return values
 }

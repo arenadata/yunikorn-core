@@ -1,3 +1,21 @@
+/*
+ Licensed to the Apache Software Foundation (ASF) under one
+ or more contributor license agreements.  See the NOTICE file
+ distributed with this work for additional information
+ regarding copyright ownership.  The ASF licenses this file
+ to you under the Apache License, Version 2.0 (the
+ "License"); you may not use this file except in compliance
+ with the License.  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
 package webservice
 
 import (
@@ -450,4 +468,49 @@ func TestLoadConfigMetricsAuthOverride(t *testing.T) {
 	// the main configuration is untouched
 	assert.Equal(t, cfg.Mode, AuthModeSharedSecret)
 	assert.Equal(t, cfg.SharedSecret, "main")
+}
+
+func TestNormalizeLDAPGroupNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		expected []string
+	}{
+		{
+			// the AD default: memberOf yields a DN, which must also produce
+			// the short name an operator can configure
+			name:     "AD group DN",
+			raw:      "CN=Enterprise Admins,CN=Users,DC=adh,DC=local",
+			expected: []string{"enterprise admins"},
+		},
+		{
+			// FreeIPA and OpenLDAP group DNs derive their short name too
+			name:     "FreeIPA group DN",
+			raw:      "cn=admins,cn=groups,cn=accounts,dc=example,dc=com",
+			expected: []string{"admins"},
+		},
+		{
+			// the DN is parsed, not split: the escaped comma stays inside the
+			// value instead of cutting the name in two
+			name:     "escaped comma",
+			raw:      `CN=Smith\, John,OU=x,DC=y`,
+			expected: []string{"smith, john"},
+		},
+		{
+			// the group entry lookup and memberUid produce plain names
+			name:     "already short",
+			raw:      "admins",
+			expected: []string{"admins"},
+		},
+		{
+			name:     "empty",
+			raw:      "",
+			expected: []string{""},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.DeepEqual(t, normalizeLDAPGroupNames(tt.raw), tt.expected)
+		})
+	}
 }
