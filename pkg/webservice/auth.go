@@ -164,6 +164,8 @@ type tokenPayload struct {
 	User   string   `json:"user"`
 	Exp    int64    `json:"exp"`
 	Groups []string `json:"groups,omitempty"`
+	// Name is the display name read during the bind; tokens without it stay valid
+	Name string `json:"name,omitempty"`
 }
 
 // webIdentity is a minimal Identity implementation for attaching to requests
@@ -355,7 +357,9 @@ func (cfg *Config) cookieAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie("YK_AUTH"); err == nil {
 			if tp, ok := verifyToken(cfg.SharedSecret, cookie.Value); ok {
-				r = identity.AddToHTTPRequestContext(newWebIdentity(tp.User, tp.Groups, tp.Exp), r)
+				id := newWebIdentity(tp.User, tp.Groups, tp.Exp)
+				id.SetDisplayName(tp.Name)
+				r = identity.AddToHTTPRequestContext(id, r)
 			}
 		}
 		next.ServeHTTP(w, r)
@@ -377,7 +381,8 @@ func (cfg *Config) basicAuth(next http.Handler, require bool) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		reject := func(message string, code int) {
+		// answer the error, or let a public route continue without an identity
+		fail := func(message string, code int) {
 			if require {
 				http.Error(w, message, code)
 				return
@@ -386,76 +391,104 @@ func (cfg *Config) basicAuth(next http.Handler, require bool) http.Handler {
 		}
 		username, password, ok := r.BasicAuth()
 		if !ok {
-			if require {
+			if require && !cfg.NoBasicChallenge {
 				w.Header().Set("WWW-Authenticate", `Basic realm="yunikorn"`)
 			}
-			reject("Authentication required", http.StatusUnauthorized)
+			fail("Authentication required", http.StatusUnauthorized)
 			return
 		}
 		if cfg.LDAP == nil {
-			reject("LDAP not configured", http.StatusInternalServerError)
+			fail("LDAP not configured", http.StatusInternalServerError)
 			return
 		}
-		groups, err := cfg.ldapBind(username, password)
+		groups, displayName, err := cfg.ldapBind(username, password)
 		if err != nil {
-			reject("Authentication failed", http.StatusUnauthorized)
+			fail("Authentication failed", http.StatusUnauthorized)
 			return
 		}
 		if cfg.SharedSecret == "" {
-			reject("Cookie signing not configured", http.StatusInternalServerError)
+			fail("Cookie signing not configured", http.StatusInternalServerError)
 			return
 		}
-		cookie := cfg.newAuthCookie(username, groups)
+		cookie := cfg.newAuthCookie(username, groups, displayName)
 		http.SetCookie(w, cookie)
 
 		id := newWebIdentity(username, groups, cookie.Expires.Unix())
+		id.SetDisplayName(displayName)
 		r = identity.AddToHTTPRequestContext(id, r)
 		next.ServeHTTP(w, r)
 	})
 }
 
 // ldapBind verifies the password by binding as the user and returns the groups
-// the user belongs to.
-func (cfg *Config) ldapBind(username, password string) ([]string, error) {
+// the user belongs to and the display name of the user entry.
+func (cfg *Config) ldapBind(username, password string) ([]string, string, error) {
 	// Connect to LDAP (with service account if configured)
 	conn, err := cfg.LDAP.connect()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = conn.Close() }()
 
-	userDN, _, err := cfg.LDAP.searchUserWithConn(conn, username)
+	userDN, _, displayName, err := cfg.LDAP.searchUserWithConn(conn, username)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// Verify password by binding as the user on the same connection
 	if err = conn.Bind(userDN, password); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// Fetch groups
 	groups, err := cfg.LDAP.lookupGroupsWithConn(conn, username, userDN)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	groupList := make([]string, 0, len(groups))
 	for g := range groups {
 		groupList = append(groupList, g)
 	}
-	return groupList, nil
+	return groupList, displayName, nil
 }
 
 // newAuthCookie builds the signed YK_AUTH cookie.
-func (cfg *Config) newAuthCookie(username string, groups []string) *http.Cookie {
+func (cfg *Config) newAuthCookie(username string, groups []string, displayName string) *http.Cookie {
 	expires := time.Now().Add(cfg.LDAP.CookieTTL)
 	return &http.Cookie{
-		Name:     "YK_AUTH",
-		Value:    SignToken(cfg.SharedSecret, username, groups, expires),
+		Name: "YK_AUTH",
+		Value: signPayload(cfg.SharedSecret, tokenPayload{
+			User: username, Exp: expires.Unix(), Groups: groups, Name: displayName,
+		}),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		Expires:  expires,
 	}
+}
+
+// expireAuthCookie clears YK_AUTH in the browser; the flags must match the ones
+// it was set with.
+func expireAuthCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:     "YK_AUTH",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	}
+}
+
+// enforcedMode is the mode actually applied, which is what whoami reports: a
+// keytab without an explicit mode enforces kerberos.
+func (cfg *Config) enforcedMode() AuthMode {
+	if cfg == nil || len(cfg.Middlewares()) == 0 {
+		return AuthModeNone
+	}
+	if cfg.Mode == "" {
+		return AuthModeKerberos
+	}
+	return cfg.Mode
 }
 
 // publicRoute reports routes served without a session. Only the ldap mode has
@@ -479,7 +512,12 @@ func (cfg *Config) wrapRoute(name string, next http.Handler) http.Handler {
 // SignToken builds an HMAC-signed token (base64(payload).hex(signature)) used
 // with the "Authorization: Token <token>" scheme and the YK_AUTH cookie.
 func SignToken(secret, user string, groups []string, expires time.Time) string {
-	payload, _ := json.Marshal(tokenPayload{User: user, Exp: expires.Unix(), Groups: groups})
+	return signPayload(secret, tokenPayload{User: user, Exp: expires.Unix(), Groups: groups})
+}
+
+// signPayload signs a full payload, for the fields SignToken does not take.
+func signPayload(secret string, tp tokenPayload) string {
+	payload, _ := json.Marshal(tp)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return base64.StdEncoding.EncodeToString(payload) + "." + hex.EncodeToString(mac.Sum(nil))
@@ -752,7 +790,7 @@ func (c *LDAPConfig) lookupGroups(username string) (map[string]bool, error) {
 
 // lookupGroupsWithConn reuses an existing LDAP connection to retrieve groups for a user.
 func (c *LDAPConfig) lookupGroupsWithConn(conn *ldap.Conn, username, userDN string) (map[string]bool, error) {
-	userDNresp, memberOf, err := c.searchUserWithConn(conn, username)
+	userDNresp, memberOf, _, err := c.searchUserWithConn(conn, username)
 	if err != nil {
 		return nil, err
 	}
@@ -778,7 +816,9 @@ func (c *LDAPConfig) lookupGroupsWithConn(conn *ldap.Conn, username, userDN stri
 	return groups, nil
 }
 
-func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (string, []string, error) {
+// searchUserWithConn returns the user DN, the group attribute values and the
+// display name (displayName, else cn).
+func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (string, []string, string, error) {
 	filter := fmt.Sprintf("(|(uid=%[1]s)(sAMAccountName=%[1]s)(cn=%[1]s))", ldap.EscapeFilter(username))
 	search := ldap.NewSearchRequest(
 		cmp.Or(c.UserBaseDN, c.BaseDN),
@@ -788,18 +828,19 @@ func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (strin
 		0,
 		false,
 		filter,
-		[]string{"dn", c.GroupAttribute},
+		[]string{"dn", c.GroupAttribute, "displayName", "cn"},
 		nil,
 	)
 	result, err := conn.Search(search)
 	if err != nil {
-		return "", nil, fmt.Errorf("ldap search error: %w", err)
+		return "", nil, "", fmt.Errorf("ldap search error: %w", err)
 	}
 	if len(result.Entries) == 0 {
-		return "", nil, fmt.Errorf("ldap user %s not found", username)
+		return "", nil, "", fmt.Errorf("ldap user %s not found", username)
 	}
 	entry := result.Entries[0]
-	return entry.DN, entry.GetAttributeValues(c.GroupAttribute), nil
+	displayName := cmp.Or(entry.GetAttributeValue("displayName"), entry.GetAttributeValue("cn"))
+	return entry.DN, entry.GetAttributeValues(c.GroupAttribute), displayName, nil
 }
 
 func (c *LDAPConfig) searchGroupEntriesWithConn(conn *ldap.Conn, username, userDN string) (map[string]bool, error) {
@@ -873,7 +914,8 @@ func (c *LDAPConfig) searchUser(username string) (string, []string, error) {
 		return "", nil, err
 	}
 	defer func() { _ = conn.Close() }()
-	return c.searchUserWithConn(conn, username)
+	dn, memberOf, _, err := c.searchUserWithConn(conn, username)
+	return dn, memberOf, err
 }
 
 // searchGroupEntries (public) is a convenience wrapper for external callers.

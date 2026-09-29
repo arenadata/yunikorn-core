@@ -49,6 +49,11 @@ type Config struct {
 	SharedSecret string   `env:"AUTH_SHARED_SECRET"`
 	UseXGroups   bool     `env:"USE_X_GROUPS"`
 
+	// NoBasicChallenge drops the WWW-Authenticate header, so that the browser
+	// opens no login dialog of its own. Set in code by yunikorn-web, not from
+	// the environment: the scheduler listener keeps challenging its clients.
+	NoBasicChallenge bool
+
 	// MetricsAuth optionally overrides the authentication for the /metrics
 	// endpoint of the metrics-only listener: an empty mode inherits the main
 	// settings, `none` disables authentication for metrics.
