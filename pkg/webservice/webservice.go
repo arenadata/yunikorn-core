@@ -47,21 +47,27 @@ type WebServer struct {
 	httpServer *http.Server
 }
 
-// NewWebServer builds the shared web server serving the given routes. Role
-// based authorization is applied per route, driven by the route Name. A route
-// with the root catch-all pattern "/*filepath" (e.g. a static file server)
-// becomes the fallback for every path no other route matched: httprouter
-// cannot combine a root catch-all with other routes. Extra middleware is
-// applied between the authentication chain and the router.
+// NewWebServer builds the shared web server serving the given routes.
+// Authentication and role based authorization are applied per route, driven by
+// the route Name, so that a route can be public. A route with the root
+// catch-all pattern "/*filepath" (e.g. a static file server) becomes the
+// fallback for every path no other route matched: httprouter cannot combine a
+// root catch-all with other routes. Extra middleware is applied around the
+// router.
 func NewWebServer(cfg *Config, addr string, rts []Route, mw ...Middleware) *WebServer {
 	router := httprouter.New()
 	for _, rt := range rts {
 		handler := cfg.authorizeRoute(rt.Name, loggingHandler(rt.HandlerFunc, rt.Name))
+		handler = cfg.wrapRoute(rt.Name, handler)
 		if rt.Pattern == "/*filepath" {
 			router.NotFound = handler
 			continue
 		}
 		router.Handler(rt.Method, rt.Pattern, handler)
+	}
+	// a path matching no route is answered by the router, outside the chain
+	if router.NotFound == nil {
+		router.NotFound = cfg.Wrap(http.NotFoundHandler())
 	}
 
 	var handler http.Handler = router
@@ -72,7 +78,7 @@ func NewWebServer(cfg *Config, addr string, rts []Route, mw ...Middleware) *WebS
 	return &WebServer{
 		httpServer: &http.Server{
 			Addr:              addr,
-			Handler:           compressResponse(cfg.Wrap(handler)),
+			Handler:           compressResponse(handler),
 			ReadHeaderTimeout: 10 * time.Second,
 			TLSConfig:         listenerTLSConfig(cfg),
 		},
