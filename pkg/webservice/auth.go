@@ -166,6 +166,8 @@ type tokenPayload struct {
 	Groups []string `json:"groups,omitempty"`
 	// Name is the display name read during the bind; tokens without it stay valid
 	Name string `json:"name,omitempty"`
+	// Auth is the login time, kept across renewals; a token without it is not renewed
+	Auth int64 `json:"auth,omitempty"`
 }
 
 // webIdentity is a minimal Identity implementation for attaching to requests
@@ -357,6 +359,9 @@ func (cfg *Config) cookieAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie("YK_AUTH"); err == nil {
 			if tp, ok := verifyToken(cfg.SharedSecret, cookie.Value); ok {
+				if renewed := cfg.renewAuthCookie(tp); renewed != nil {
+					http.SetCookie(w, renewed)
+				}
 				id := newWebIdentity(tp.User, tp.Groups, tp.Exp)
 				id.SetDisplayName(tp.Name)
 				r = identity.AddToHTTPRequestContext(id, r)
@@ -450,20 +455,49 @@ func (cfg *Config) ldapBind(username, password string) ([]string, string, error)
 	return groupList, displayName, nil
 }
 
-// newAuthCookie builds the signed YK_AUTH cookie.
+// newAuthCookie builds the signed YK_AUTH cookie of a fresh login.
 func (cfg *Config) newAuthCookie(username string, groups []string, displayName string) *http.Cookie {
+	login := time.Now()
+	return cfg.authCookie(tokenPayload{
+		User: username, Groups: groups, Name: displayName, Auth: login.Unix(),
+	}, login)
+}
+
+// authCookie signs tp with an expiry of CookieTTL from now, never later than
+// SessionMaxLifetime after the login.
+func (cfg *Config) authCookie(tp tokenPayload, login time.Time) *http.Cookie {
 	expires := time.Now().Add(cfg.LDAP.CookieTTL)
+	if limit := login.Add(cfg.LDAP.SessionMaxLifetime); expires.After(limit) {
+		expires = limit
+	}
+	tp.Exp = expires.Unix()
 	return &http.Cookie{
-		Name: "YK_AUTH",
-		Value: signPayload(cfg.SharedSecret, tokenPayload{
-			User: username, Exp: expires.Unix(), Groups: groups, Name: displayName,
-		}),
+		Name:     "YK_AUTH",
+		Value:    signPayload(cfg.SharedSecret, tp),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		Expires:  expires,
 	}
+}
+
+// renewAuthCookie re-issues a cookie that is past half its lifetime, so that an
+// active user is not logged out in the middle of work. CookieTTL is therefore
+// an idle timeout. It returns nil when there is nothing to renew: a cookie
+// issued before this was added, or one already at the absolute limit.
+func (cfg *Config) renewAuthCookie(tp tokenPayload) *http.Cookie {
+	if cfg.LDAP == nil || tp.Auth == 0 {
+		return nil
+	}
+	if time.Until(time.Unix(tp.Exp, 0)) > cfg.LDAP.CookieTTL/2 {
+		return nil
+	}
+	cookie := cfg.authCookie(tp, time.Unix(tp.Auth, 0))
+	if cookie.Expires.Unix() <= tp.Exp {
+		return nil
+	}
+	return cookie
 }
 
 // expireAuthCookie clears YK_AUTH in the browser; the flags must match the ones

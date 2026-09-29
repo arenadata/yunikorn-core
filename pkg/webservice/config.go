@@ -89,6 +89,7 @@ type LDAPConfig struct {
 	InsecureSkipVerify bool          `env:"INSECURE_SKIP_VERIFY"`
 	CAFile             string        `env:"CA_FILE"`
 	CookieTTL          time.Duration `env:"COOKIE_TTL"`
+	SessionMaxLifetime time.Duration `env:"SESSION_MAX_LIFETIME"`
 	CookieSecret       string        `env:"COOKIE_SECRET"`
 
 	// internal global group cache (initialised once)
@@ -212,7 +213,7 @@ func (cfg *Config) normalizeAuth() {
 
 func (c LDAPConfig) IsZero() bool {
 	return c.URL == "" && c.BindDN == "" && c.BindPassword == "" && c.BaseDN == "" &&
-		c.GroupAttribute == "" && c.CAFile == "" && c.CookieSecret == "" &&
+		c.GroupAttribute == "" && c.CAFile == "" && c.CookieSecret == "" && c.SessionMaxLifetime == 0 &&
 		len(c.AllowedGroups) == 0 && len(c.AdminGroups) == 0 &&
 		len(c.ViewerGroups) == 0 && len(c.ServiceGroups) == 0 &&
 		c.CacheTTL == 0 && c.CookieTTL == 0 && !c.InsecureSkipVerify
@@ -227,6 +228,9 @@ func (c *LDAPConfig) applyDefaults() {
 	}
 	if c.CookieTTL <= 0 {
 		c.CookieTTL = time.Hour
+	}
+	if c.SessionMaxLifetime <= 0 {
+		c.SessionMaxLifetime = 12 * time.Hour
 	}
 	// initialise global group cache
 	c.cache = newGroupCache(c.CacheTTL)
