@@ -79,13 +79,23 @@ func TestWhoamiKerberos(t *testing.T) {
 // the endpoint never challenges with Basic.
 func TestLoginBadRequest(t *testing.T) {
 	handler := login(ldapConfig("login-secret"))
-	for _, body := range []string{``, `not json`, `{"username":"alice"}`, `{"username":"alice","password":""}`} {
+	for _, body := range []string{``, `not json`, `{"username":"alice","password":"secret","role":"admin"}`} {
 		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		handler(rr, req)
 		assert.Equal(t, rr.Code, http.StatusBadRequest, "body %q", body)
 		assert.Equal(t, rr.Header().Get("Content-Type"), "application/json; charset=UTF-8", "body %q", body)
+		assert.Equal(t, rr.Header().Get("WWW-Authenticate"), "", "body %q", body)
+	}
+
+	// empty credentials are a failed login, not a malformed request
+	for _, body := range []string{`{"username":"alice"}`, `{"username":"alice","password":""}`} {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		assert.Equal(t, rr.Code, http.StatusUnauthorized, "body %q", body)
 		assert.Equal(t, rr.Header().Get("WWW-Authenticate"), "", "body %q", body)
 	}
 

@@ -20,6 +20,7 @@ package webservice
 
 import (
 	"encoding/json"
+	"io"
 	"mime"
 	"net/http"
 
@@ -29,6 +30,9 @@ import (
 
 	"github.com/apache/yunikorn-core/pkg/log"
 )
+
+// maxLoginBodyBytes caps the login body: the credentials are two short strings.
+const maxLoginBodyBytes = 4 << 10
 
 // loginRequest is the body of POST /auth/login.
 type loginRequest struct {
@@ -77,8 +81,14 @@ func login(cfg *Config) http.HandlerFunc {
 			return
 		}
 		var req loginRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || req.Password == "" {
+		decoder := json.NewDecoder(io.LimitReader(r.Body, maxLoginBodyBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
 			authError(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Username == "" || req.Password == "" {
+			authError(w, "Authentication failed", http.StatusUnauthorized)
 			return
 		}
 		if cfg.LDAP == nil || cfg.SharedSecret == "" {
