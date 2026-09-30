@@ -81,10 +81,23 @@ func TestLoginBadRequest(t *testing.T) {
 	handler := login(ldapConfig("login-secret"))
 	for _, body := range []string{``, `not json`, `{"username":"alice"}`, `{"username":"alice","password":""}`} {
 		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		handler(rr, req)
 		assert.Equal(t, rr.Code, http.StatusBadRequest, "body %q", body)
 		assert.Equal(t, rr.Header().Get("WWW-Authenticate"), "", "body %q", body)
+	}
+
+	// a form from another site can only send these, so they never reach the bind
+	for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data"} {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login",
+			strings.NewReader(`{"username":"alice","password":"secret"}`))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		assert.Equal(t, rr.Code, http.StatusBadRequest, "content type %q", contentType)
 	}
 }
 

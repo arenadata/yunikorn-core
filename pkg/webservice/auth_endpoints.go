@@ -20,9 +20,14 @@ package webservice
 
 import (
 	"encoding/json"
+	"mime"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	"github.com/go-krb5/x/identity"
+
+	"github.com/apache/yunikorn-core/pkg/log"
 )
 
 // loginRequest is the body of POST /auth/login.
@@ -58,18 +63,24 @@ func AuthRoutes(cfg *Config) []Route {
 // auth. It sends no WWW-Authenticate: the SPA shows its own form.
 func login(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// an HTML form cannot send this content type, which keeps a cross-site
+		// page from logging the user in
+		if contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || contentType != "application/json" {
+			buildJSONErrorResponse(w, "Invalid content type", http.StatusBadRequest)
+			return
+		}
 		var req loginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || req.Password == "" {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			buildJSONErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
 		if cfg.LDAP == nil || cfg.SharedSecret == "" {
-			http.Error(w, "Login not configured", http.StatusInternalServerError)
+			buildJSONErrorResponse(w, "Login not configured", http.StatusInternalServerError)
 			return
 		}
 		groups, displayName, err := cfg.ldapBind(req.Username, req.Password)
 		if err != nil {
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			buildJSONErrorResponse(w, "Authentication failed", http.StatusUnauthorized)
 			return
 		}
 		http.SetCookie(w, cfg.newAuthCookie(req.Username, groups, displayName))
@@ -105,6 +116,11 @@ func whoami(cfg *Config) http.HandlerFunc {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		_ = json.NewEncoder(w).Encode(resp)
+		// the answer depends on the session, so a cached copy would keep showing
+		// the user after a logout
+		w.Header().Set("Cache-Control", "no-store")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Log(log.REST).Error("unable to write the whoami response", zap.Error(err))
+		}
 	}
 }
