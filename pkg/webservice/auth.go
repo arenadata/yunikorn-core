@@ -402,17 +402,9 @@ func (cfg *Config) basicAuth(next http.Handler, require bool) http.Handler {
 			fail("Authentication required", http.StatusUnauthorized)
 			return
 		}
-		if cfg.LDAP == nil {
-			fail("LDAP not configured", http.StatusInternalServerError)
-			return
-		}
 		groups, displayName, err := cfg.ldapBind(username, password)
 		if err != nil {
 			fail("Authentication failed", http.StatusUnauthorized)
-			return
-		}
-		if cfg.SharedSecret == "" {
-			fail("Cookie signing not configured", http.StatusInternalServerError)
 			return
 		}
 		cookie := cfg.newAuthCookie(username, groups, displayName)

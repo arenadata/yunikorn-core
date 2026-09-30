@@ -437,6 +437,30 @@ func writeTestCertificate(t *testing.T) (string, string) {
 	return certFile, keyFile
 }
 
+// TestValidateAuth: a mode without the settings it needs must not start the
+// listener, so that a deployment mistake never leaves the API open.
+func TestValidateAuth(t *testing.T) {
+	ldap := &LDAPConfig{URL: "ldap://example.org"}
+	for _, tc := range []struct {
+		name string
+		cfg  *Config
+		ok   bool
+	}{
+		{"ldap", &Config{Mode: AuthModeLDAP, SharedSecret: "s", LDAP: ldap}, true},
+		{"ldap without a directory", &Config{Mode: AuthModeLDAP, SharedSecret: "s"}, false},
+		{"ldap without a cookie secret", &Config{Mode: AuthModeLDAP, LDAP: ldap}, false},
+		{"kerberos", &Config{Mode: AuthModeKerberos, KeytabPath: "/etc/keytab"}, true},
+		{"kerberos without a keytab", &Config{Mode: AuthModeKerberos}, false},
+		{"kerberos_ldap without a directory", &Config{Mode: AuthModeKerberosLDAP, KeytabPath: "/etc/keytab"}, false},
+		{"shared secret without a secret", &Config{Mode: AuthModeSharedSecret}, false},
+		{"mtls without a CA", &Config{Mode: AuthModeMTLS, TLS: &TLSConfig{CertFile: "c", KeyFile: "k"}}, false},
+		{"authentication off", &Config{}, true},
+	} {
+		err := tc.cfg.validateAuth()
+		assert.Equal(t, err == nil, tc.ok, "%s: %v", tc.name, err)
+	}
+}
+
 func TestLoadConfigMetricsAuthOverride(t *testing.T) {
 	t.Setenv("YUNIKORN_AUTH_MODE", string(AuthModeSharedSecret))
 	t.Setenv("YUNIKORN_AUTH_SHARED_SECRET", "main")

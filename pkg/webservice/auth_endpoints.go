@@ -91,10 +91,6 @@ func login(cfg *Config) http.HandlerFunc {
 			authError(w, "Authentication failed", http.StatusUnauthorized)
 			return
 		}
-		if cfg.LDAP == nil || cfg.SharedSecret == "" {
-			authError(w, "Login not configured", http.StatusInternalServerError)
-			return
-		}
 		groups, displayName, err := cfg.ldapBind(req.Username, req.Password)
 		if err != nil {
 			authError(w, "Authentication failed", http.StatusUnauthorized)

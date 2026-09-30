@@ -163,9 +163,11 @@ func NewWebApp(context *scheduler.ClusterContext, internalMetrics *history.Inter
 func (m *WebService) StartWebApp() {
 	cfg, err := LoadConfig()
 	if err != nil {
-		log.Log(log.REST).Error("unable to load webservice configuration",
+		// starting without the configured authentication would open the API,
+		// so the listener stays closed instead
+		log.Log(log.REST).Error("unable to load webservice configuration, REST API not started",
 			zap.Error(err))
-		cfg = &Config{}
+		return
 	}
 	m.server = NewWebServer(cfg, ":9080", webRoutes)
 	m.server.Start()

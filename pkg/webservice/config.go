@@ -185,7 +185,42 @@ func LoadConfig() (*Config, error) {
 		cfg.K8Shim.TLS = nil
 	}
 	cfg.normalizeAuth()
+	if err := cfg.validateAuth(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// validateAuth rejects a mode that cannot work with the settings it was given.
+// A missing setting is a deployment mistake, so it stops the listener instead
+// of surfacing on every request.
+func (cfg *Config) validateAuth() error {
+	needs := func(ok bool, what string) error {
+		if ok {
+			return nil
+		}
+		return fmt.Errorf("auth mode %q needs %s", cfg.enforcedMode(), what)
+	}
+	switch cfg.enforcedMode() {
+	case AuthModeLDAP:
+		if err := needs(cfg.LDAP != nil, "the YUNIKORN_LDAP_* connection settings"); err != nil {
+			return err
+		}
+		return needs(cfg.SharedSecret != "",
+			"YUNIKORN_LDAP_COOKIE_SECRET or YUNIKORN_AUTH_SHARED_SECRET to sign the session cookie")
+	case AuthModeKerberosLDAP:
+		if err := needs(cfg.KeytabPath != "", "YUNIKORN_KEYTAB_PATH"); err != nil {
+			return err
+		}
+		return needs(cfg.LDAP != nil, "the YUNIKORN_LDAP_* connection settings")
+	case AuthModeKerberos:
+		return needs(cfg.KeytabPath != "", "YUNIKORN_KEYTAB_PATH")
+	case AuthModeSharedSecret:
+		return needs(cfg.SharedSecret != "", "YUNIKORN_AUTH_SHARED_SECRET")
+	case AuthModeMTLS:
+		return needs(cfg.TLS != nil && cfg.TLS.CAFile != "", "YUNIKORN_TLS_CA_FILE to verify client certificates")
+	}
+	return nil
 }
 
 // normalizeAuth finalizes the parsed authentication settings: it infers the
