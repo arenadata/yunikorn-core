@@ -516,7 +516,7 @@ func expireAuthCookie() *http.Cookie {
 // enforcedMode is the mode actually applied, which is what whoami reports: a
 // keytab without an explicit mode enforces kerberos.
 func (cfg *Config) enforcedMode() AuthMode {
-	if cfg == nil || len(cfg.Middlewares()) == 0 {
+	if cfg == nil || (cfg.Mode == "" && cfg.KeytabPath == "") {
 		return AuthModeNone
 	}
 	if cfg.Mode == "" {
