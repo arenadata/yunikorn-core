@@ -85,6 +85,7 @@ func TestLoginBadRequest(t *testing.T) {
 		rr := httptest.NewRecorder()
 		handler(rr, req)
 		assert.Equal(t, rr.Code, http.StatusBadRequest, "body %q", body)
+		assert.Equal(t, rr.Header().Get("Content-Type"), "application/json; charset=UTF-8", "body %q", body)
 		assert.Equal(t, rr.Header().Get("WWW-Authenticate"), "", "body %q", body)
 	}
 

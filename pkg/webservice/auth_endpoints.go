@@ -59,6 +59,13 @@ func AuthRoutes(cfg *Config) []Route {
 	return routes
 }
 
+// authError answers with a JSON error: buildJSONErrorResponse writes the body
+// but does not announce its type.
+func authError(w http.ResponseWriter, detail string, code int) {
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	buildJSONErrorResponse(w, detail, code)
+}
+
 // login binds the credentials against LDAP and sets the same cookie as Basic
 // auth. It sends no WWW-Authenticate: the SPA shows its own form.
 func login(cfg *Config) http.HandlerFunc {
@@ -66,21 +73,21 @@ func login(cfg *Config) http.HandlerFunc {
 		// an HTML form cannot send this content type, which keeps a cross-site
 		// page from logging the user in
 		if contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || contentType != "application/json" {
-			buildJSONErrorResponse(w, "Invalid content type", http.StatusBadRequest)
+			authError(w, "Invalid content type", http.StatusBadRequest)
 			return
 		}
 		var req loginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || req.Password == "" {
-			buildJSONErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+			authError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
 		if cfg.LDAP == nil || cfg.SharedSecret == "" {
-			buildJSONErrorResponse(w, "Login not configured", http.StatusInternalServerError)
+			authError(w, "Login not configured", http.StatusInternalServerError)
 			return
 		}
 		groups, displayName, err := cfg.ldapBind(req.Username, req.Password)
 		if err != nil {
-			buildJSONErrorResponse(w, "Authentication failed", http.StatusUnauthorized)
+			authError(w, "Authentication failed", http.StatusUnauthorized)
 			return
 		}
 		http.SetCookie(w, cfg.newAuthCookie(req.Username, groups, displayName))
