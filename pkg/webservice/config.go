@@ -49,6 +49,11 @@ type Config struct {
 	SharedSecret string   `env:"AUTH_SHARED_SECRET"`
 	UseXGroups   bool     `env:"USE_X_GROUPS"`
 
+	// NoBasicChallenge drops the WWW-Authenticate header, so that the browser
+	// opens no login dialog of its own. Set in code by yunikorn-web, not from
+	// the environment: the scheduler listener keeps challenging its clients.
+	NoBasicChallenge bool
+
 	// MetricsAuth optionally overrides the authentication for the /metrics
 	// endpoint of the metrics-only listener: an empty mode inherits the main
 	// settings, `none` disables authentication for metrics.
@@ -84,6 +89,7 @@ type LDAPConfig struct {
 	InsecureSkipVerify bool          `env:"INSECURE_SKIP_VERIFY"`
 	CAFile             string        `env:"CA_FILE"`
 	CookieTTL          time.Duration `env:"COOKIE_TTL"`
+	SessionMaxLifetime time.Duration `env:"SESSION_MAX_LIFETIME"`
 	CookieSecret       string        `env:"COOKIE_SECRET"`
 
 	// internal global group cache (initialised once)
@@ -179,7 +185,42 @@ func LoadConfig() (*Config, error) {
 		cfg.K8Shim.TLS = nil
 	}
 	cfg.normalizeAuth()
+	if err := cfg.validateAuth(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// validateAuth rejects a mode that cannot work with the settings it was given.
+// A missing setting is a deployment mistake, so it stops the listener instead
+// of surfacing on every request.
+func (cfg *Config) validateAuth() error {
+	needs := func(ok bool, what string) error {
+		if ok {
+			return nil
+		}
+		return fmt.Errorf("auth mode %q needs %s", cfg.enforcedMode(), what)
+	}
+	switch cfg.enforcedMode() {
+	case AuthModeLDAP:
+		if err := needs(cfg.LDAP != nil, "the YUNIKORN_LDAP_* connection settings"); err != nil {
+			return err
+		}
+		return needs(cfg.SharedSecret != "",
+			"YUNIKORN_LDAP_COOKIE_SECRET or YUNIKORN_AUTH_SHARED_SECRET to sign the session cookie")
+	case AuthModeKerberosLDAP:
+		if err := needs(cfg.KeytabPath != "", "YUNIKORN_KEYTAB_PATH"); err != nil {
+			return err
+		}
+		return needs(cfg.LDAP != nil, "the YUNIKORN_LDAP_* connection settings")
+	case AuthModeKerberos:
+		return needs(cfg.KeytabPath != "", "YUNIKORN_KEYTAB_PATH")
+	case AuthModeSharedSecret:
+		return needs(cfg.SharedSecret != "", "YUNIKORN_AUTH_SHARED_SECRET")
+	case AuthModeMTLS:
+		return needs(cfg.TLS != nil && cfg.TLS.CAFile != "", "YUNIKORN_TLS_CA_FILE to verify client certificates")
+	}
+	return nil
 }
 
 // normalizeAuth finalizes the parsed authentication settings: it infers the
@@ -207,7 +248,7 @@ func (cfg *Config) normalizeAuth() {
 
 func (c LDAPConfig) IsZero() bool {
 	return c.URL == "" && c.BindDN == "" && c.BindPassword == "" && c.BaseDN == "" &&
-		c.GroupAttribute == "" && c.CAFile == "" && c.CookieSecret == "" &&
+		c.GroupAttribute == "" && c.CAFile == "" && c.CookieSecret == "" && c.SessionMaxLifetime == 0 &&
 		len(c.AllowedGroups) == 0 && len(c.AdminGroups) == 0 &&
 		len(c.ViewerGroups) == 0 && len(c.ServiceGroups) == 0 &&
 		c.CacheTTL == 0 && c.CookieTTL == 0 && !c.InsecureSkipVerify
@@ -222,6 +263,9 @@ func (c *LDAPConfig) applyDefaults() {
 	}
 	if c.CookieTTL <= 0 {
 		c.CookieTTL = time.Hour
+	}
+	if c.SessionMaxLifetime <= 0 {
+		c.SessionMaxLifetime = 12 * time.Hour
 	}
 	// initialise global group cache
 	c.cache = newGroupCache(c.CacheTTL)

@@ -99,8 +99,9 @@ disabled; `shared_secret` is inferred when only the secret is set):
 	`{ "user": "<user>", "exp": <unix_ts>, "groups": ["g1","g2"] }`.
 - `ldap`: BasicAuth password verification against LDAP; on success the server
 	issues a secure `YK_AUTH` cookie with the same token format, signed with the
-	shared secret (or `YUNIKORN_LDAP_COOKIE_SECRET`); the TTL is configured via
-	`YUNIKORN_LDAP_COOKIE_TTL`.
+	shared secret (or `YUNIKORN_LDAP_COOKIE_SECRET`). The cookie is renewed while
+	the user is active, so `YUNIKORN_LDAP_COOKIE_TTL` acts as an idle timeout and
+	`YUNIKORN_LDAP_SESSION_MAX_LIFETIME` as the limit for the whole session.
 - `kerberos` / `kerberos_ldap`: SPNEGO (Kerberos) via a keytab
 	(`YUNIKORN_KEYTAB_PATH`); `kerberos_ldap` additionally authorizes via LDAP
 	group lookups.
@@ -155,7 +156,8 @@ Environment variable reference:
 | `YUNIKORN_LDAP_ALLOWED_GROUPS`, `_ADMIN_GROUPS`, `_VIEWER_GROUPS`, `_SERVICE_GROUPS` | comma separated group lists for authorization |
 | `YUNIKORN_LDAP_CACHE_TTL` | group membership cache TTL (default `5m`) |
 | `YUNIKORN_LDAP_CA_FILE`, `YUNIKORN_LDAP_INSECURE_SKIP_VERIFY` | LDAP connection TLS |
-| `YUNIKORN_LDAP_COOKIE_SECRET`, `YUNIKORN_LDAP_COOKIE_TTL` | `YK_AUTH` cookie signing secret and TTL (default `1h`) |
+| `YUNIKORN_LDAP_COOKIE_SECRET`, `YUNIKORN_LDAP_COOKIE_TTL` | `YK_AUTH` cookie signing secret and idle timeout (default `1h`) |
+| `YUNIKORN_LDAP_SESSION_MAX_LIFETIME` | how long a session may be renewed after the login (default `12h`) |
 | `YUNIKORN_K8SHIM_URL` | k8shim REST API address (web side, default `http://127.0.0.1:9080`) |
 | `YUNIKORN_K8SHIM_AUTH_SHARED_SECRET` | secret signing the tokens of the web -> k8shim leg |
 | `YUNIKORN_K8SHIM_TLS_CERT_FILE` / `_KEY_FILE` / `_CA_FILE` | client certificate set for mTLS between web and k8shim |

@@ -43,12 +43,15 @@ const (
 	RouteNameSystem    = "System"
 	// RouteNameStaticUI is the static web UI file server of yunikorn-web.
 	RouteNameStaticUI = "StaticUI"
+	// RouteNameAuth is the /auth endpoint set of yunikorn-web: an identity is
+	// enough for them, a role is not required.
+	RouteNameAuth = "Auth"
 )
 
 // knownRouteName reports whether the route category is one of the defined ones.
 func knownRouteName(name string) bool {
 	switch name {
-	case RouteNameCluster, RouteNameScheduler, RouteNameMetrics, RouteNameSystem, RouteNameStaticUI:
+	case RouteNameCluster, RouteNameScheduler, RouteNameMetrics, RouteNameSystem, RouteNameStaticUI, RouteNameAuth:
 		return true
 	}
 	return false

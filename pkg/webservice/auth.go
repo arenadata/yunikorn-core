@@ -164,6 +164,10 @@ type tokenPayload struct {
 	User   string   `json:"user"`
 	Exp    int64    `json:"exp"`
 	Groups []string `json:"groups,omitempty"`
+	// Name is the display name read during the bind; tokens without it stay valid
+	Name string `json:"name,omitempty"`
+	// Auth is the login time, kept across renewals; a token without it is not renewed
+	Auth int64 `json:"auth,omitempty"`
 }
 
 // webIdentity is a minimal Identity implementation for attaching to requests
@@ -355,7 +359,12 @@ func (cfg *Config) cookieAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie("YK_AUTH"); err == nil {
 			if tp, ok := verifyToken(cfg.SharedSecret, cookie.Value); ok {
-				r = identity.AddToHTTPRequestContext(newWebIdentity(tp.User, tp.Groups, tp.Exp), r)
+				if renewed := cfg.renewAuthCookie(tp); renewed != nil {
+					http.SetCookie(w, renewed)
+				}
+				id := newWebIdentity(tp.User, tp.Groups, tp.Exp)
+				id.SetDisplayName(tp.Name)
+				r = identity.AddToHTTPRequestContext(id, r)
 			}
 		}
 		next.ServeHTTP(w, r)
@@ -366,76 +375,175 @@ func (cfg *Config) cookieAuth(next http.Handler) http.Handler {
 // YK_AUTH cookie and attaches the identity to the request context; requests
 // already authenticated by an earlier middleware pass through.
 func (cfg *Config) ldapBasicAuth(next http.Handler) http.Handler {
+	return cfg.basicAuth(next, true)
+}
+
+// basicAuth is ldapBasicAuth with the rejection made optional: a public route
+// passes require false and continues unauthenticated instead of rejecting.
+func (cfg *Config) basicAuth(next http.Handler, require bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if identity.FromHTTPRequestContext(r) != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// answer the error, or let a public route continue without an identity
+		fail := func(message string, code int) {
+			if require {
+				http.Error(w, message, code)
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
 		username, password, ok := r.BasicAuth()
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="yunikorn"`)
-			http.Error(w, "Authentication required", http.StatusUnauthorized)
+			if require && !cfg.NoBasicChallenge {
+				w.Header().Set("WWW-Authenticate", `Basic realm="yunikorn"`)
+			}
+			fail("Authentication required", http.StatusUnauthorized)
 			return
 		}
-		if cfg.LDAP == nil {
-			http.Error(w, "LDAP not configured", http.StatusInternalServerError)
-			return
-		}
-		// Connect to LDAP (with service account if configured)
-		conn, err := cfg.LDAP.connect()
+		groups, displayName, err := cfg.ldapBind(username, password)
 		if err != nil {
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			fail("Authentication failed", http.StatusUnauthorized)
 			return
 		}
-		defer func() { _ = conn.Close() }()
-
-		userDN, _, err := cfg.LDAP.searchUserWithConn(conn, username)
-		if err != nil {
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
-			return
-		}
-		// Verify password by binding as the user on the same connection
-		if err = conn.Bind(userDN, password); err != nil {
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
-			return
-		}
-		// Fetch groups
-		groups, err := cfg.LDAP.lookupGroupsWithConn(conn, username, userDN)
-		if err != nil {
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
-			return
-		}
-		groupList := make([]string, 0, len(groups))
-		for g := range groups {
-			groupList = append(groupList, g)
-		}
-
-		if cfg.SharedSecret == "" {
-			http.Error(w, "Cookie signing not configured", http.StatusInternalServerError)
-			return
-		}
-		expires := time.Now().Add(cfg.LDAP.CookieTTL)
-		cookie := &http.Cookie{
-			Name:     "YK_AUTH",
-			Value:    SignToken(cfg.SharedSecret, username, groupList, expires),
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-			Expires:  expires,
-		}
+		cookie := cfg.newAuthCookie(username, groups, displayName)
 		http.SetCookie(w, cookie)
 
-		id := newWebIdentity(username, groupList, expires.Unix())
+		id := newWebIdentity(username, groups, cookie.Expires.Unix())
+		id.SetDisplayName(displayName)
 		r = identity.AddToHTTPRequestContext(id, r)
 		next.ServeHTTP(w, r)
 	})
 }
 
+// ldapBind verifies the password by binding as the user and returns the groups
+// the user belongs to and the display name of the user entry.
+func (cfg *Config) ldapBind(username, password string) ([]string, string, error) {
+	// Connect to LDAP (with service account if configured)
+	conn, err := cfg.LDAP.connect()
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = conn.Close() }()
+
+	userDN, _, displayName, err := cfg.LDAP.searchUserWithConn(conn, username)
+	if err != nil {
+		return nil, "", err
+	}
+	// Verify password by binding as the user on the same connection
+	if err = conn.Bind(userDN, password); err != nil {
+		return nil, "", err
+	}
+	// Fetch groups
+	groups, err := cfg.LDAP.lookupGroupsWithConn(conn, username, userDN)
+	if err != nil {
+		return nil, "", err
+	}
+	groupList := make([]string, 0, len(groups))
+	for g := range groups {
+		groupList = append(groupList, g)
+	}
+	return groupList, displayName, nil
+}
+
+// newAuthCookie builds the signed YK_AUTH cookie of a fresh login.
+func (cfg *Config) newAuthCookie(username string, groups []string, displayName string) *http.Cookie {
+	login := time.Now()
+	return cfg.authCookie(tokenPayload{
+		User: username, Groups: groups, Name: displayName, Auth: login.Unix(),
+	}, login)
+}
+
+// authCookie signs tp with an expiry of CookieTTL from now, never later than
+// SessionMaxLifetime after the login.
+func (cfg *Config) authCookie(tp tokenPayload, login time.Time) *http.Cookie {
+	expires := time.Now().Add(cfg.LDAP.CookieTTL)
+	if limit := login.Add(cfg.LDAP.SessionMaxLifetime); expires.After(limit) {
+		expires = limit
+	}
+	tp.Exp = expires.Unix()
+	return &http.Cookie{
+		Name:     "YK_AUTH",
+		Value:    signPayload(cfg.SharedSecret, tp),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		Expires:  expires,
+	}
+}
+
+// renewAuthCookie re-issues a cookie that is past half its lifetime, so that an
+// active user is not logged out in the middle of work. CookieTTL is therefore
+// an idle timeout. It returns nil when there is nothing to renew: a cookie
+// issued before this was added, or one already at the absolute limit.
+func (cfg *Config) renewAuthCookie(tp tokenPayload) *http.Cookie {
+	if cfg.LDAP == nil || tp.Auth == 0 {
+		return nil
+	}
+	if time.Until(time.Unix(tp.Exp, 0)) > cfg.LDAP.CookieTTL/2 {
+		return nil
+	}
+	cookie := cfg.authCookie(tp, time.Unix(tp.Auth, 0))
+	if cookie.Expires.Unix() <= tp.Exp {
+		return nil
+	}
+	return cookie
+}
+
+// expireAuthCookie clears YK_AUTH in the browser; the flags must match the ones
+// it was set with.
+func expireAuthCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:     "YK_AUTH",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	}
+}
+
+// enforcedMode is the mode actually applied, which is what whoami reports: a
+// keytab without an explicit mode enforces kerberos.
+func (cfg *Config) enforcedMode() AuthMode {
+	if cfg == nil || (cfg.Mode == "" && cfg.KeytabPath == "") {
+		return AuthModeNone
+	}
+	if cfg.Mode == "" {
+		return AuthModeKerberos
+	}
+	return cfg.Mode
+}
+
+// publicRoute reports routes served without a session. Only the ldap mode has
+// them: the SPA must load and call /auth/* before anyone has logged in.
+func (cfg *Config) publicRoute(name string) bool {
+	if cfg == nil || cfg.Mode != AuthModeLDAP {
+		return false
+	}
+	return name == RouteNameStaticUI || name == RouteNameAuth
+}
+
+// wrapRoute authenticates one route. A public route is never rejected, but the
+// chain still runs, so a cookie sent with the request is read.
+func (cfg *Config) wrapRoute(name string, next http.Handler) http.Handler {
+	if !cfg.publicRoute(name) {
+		return cfg.Wrap(next)
+	}
+	return cfg.cookieAuth(cfg.basicAuth(next, false))
+}
+
 // SignToken builds an HMAC-signed token (base64(payload).hex(signature)) used
 // with the "Authorization: Token <token>" scheme and the YK_AUTH cookie.
 func SignToken(secret, user string, groups []string, expires time.Time) string {
-	payload, _ := json.Marshal(tokenPayload{User: user, Exp: expires.Unix(), Groups: groups})
+	return signPayload(secret, tokenPayload{User: user, Exp: expires.Unix(), Groups: groups})
+}
+
+// signPayload signs a full payload, for the fields SignToken does not take.
+func signPayload(secret string, tp tokenPayload) string {
+	payload, _ := json.Marshal(tp)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return base64.StdEncoding.EncodeToString(payload) + "." + hex.EncodeToString(mac.Sum(nil))
@@ -508,6 +616,11 @@ func (cfg *Config) authorizeRoute(name string, next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 		})
+	}
+	// the auth endpoints need no role, and a public route has no identity to
+	// check a role on
+	if name == RouteNameAuth || cfg.publicRoute(name) {
+		return next
 	}
 	if cfg.LDAP == nil || (cfg.Mode != AuthModeLDAP && cfg.Mode != AuthModeKerberosLDAP) {
 		return next
@@ -703,7 +816,7 @@ func (c *LDAPConfig) lookupGroups(username string) (map[string]bool, error) {
 
 // lookupGroupsWithConn reuses an existing LDAP connection to retrieve groups for a user.
 func (c *LDAPConfig) lookupGroupsWithConn(conn *ldap.Conn, username, userDN string) (map[string]bool, error) {
-	userDNresp, memberOf, err := c.searchUserWithConn(conn, username)
+	userDNresp, memberOf, _, err := c.searchUserWithConn(conn, username)
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +842,9 @@ func (c *LDAPConfig) lookupGroupsWithConn(conn *ldap.Conn, username, userDN stri
 	return groups, nil
 }
 
-func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (string, []string, error) {
+// searchUserWithConn returns the user DN, the group attribute values and the
+// display name (displayName, else cn).
+func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (string, []string, string, error) {
 	filter := fmt.Sprintf("(|(uid=%[1]s)(sAMAccountName=%[1]s)(cn=%[1]s))", ldap.EscapeFilter(username))
 	search := ldap.NewSearchRequest(
 		cmp.Or(c.UserBaseDN, c.BaseDN),
@@ -739,18 +854,19 @@ func (c *LDAPConfig) searchUserWithConn(conn *ldap.Conn, username string) (strin
 		0,
 		false,
 		filter,
-		[]string{"dn", c.GroupAttribute},
+		[]string{"dn", c.GroupAttribute, "displayName", "cn"},
 		nil,
 	)
 	result, err := conn.Search(search)
 	if err != nil {
-		return "", nil, fmt.Errorf("ldap search error: %w", err)
+		return "", nil, "", fmt.Errorf("ldap search error: %w", err)
 	}
 	if len(result.Entries) == 0 {
-		return "", nil, fmt.Errorf("ldap user %s not found", username)
+		return "", nil, "", fmt.Errorf("ldap user %s not found", username)
 	}
 	entry := result.Entries[0]
-	return entry.DN, entry.GetAttributeValues(c.GroupAttribute), nil
+	displayName := cmp.Or(entry.GetAttributeValue("displayName"), entry.GetAttributeValue("cn"))
+	return entry.DN, entry.GetAttributeValues(c.GroupAttribute), displayName, nil
 }
 
 func (c *LDAPConfig) searchGroupEntriesWithConn(conn *ldap.Conn, username, userDN string) (map[string]bool, error) {
@@ -824,7 +940,8 @@ func (c *LDAPConfig) searchUser(username string) (string, []string, error) {
 		return "", nil, err
 	}
 	defer func() { _ = conn.Close() }()
-	return c.searchUserWithConn(conn, username)
+	dn, memberOf, _, err := c.searchUserWithConn(conn, username)
+	return dn, memberOf, err
 }
 
 // searchGroupEntries (public) is a convenience wrapper for external callers.
